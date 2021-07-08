@@ -23,7 +23,7 @@ pub struct CommitmentPayload<Leaf: Hashable + Encode + Decode> {
     pub new_validator_set_id: u64,
 }
 
-pub fn generate_signed_commitment<TBlockNumber: Encode, TPayload: Encode>(
+fn generate_signed_commitment<TBlockNumber: Encode, TPayload: Encode>(
     set_id: u64,
     block_number: TBlockNumber,
     payload: TPayload,
@@ -66,7 +66,7 @@ pub fn verify_signed_commitment<TBlockNumber: Encode, TPayload: Encode>(
     Ok(())
 }
 
-pub fn generate_random_storage_and_proof() -> (
+fn generate_random_storage_and_proof() -> (
     sp_trie::MemoryDB<sp_core::KeccakHasher>,
     <sp_core::KeccakHasher as Hasher>::Out,
     (Vec<u8>, Vec<u8>),

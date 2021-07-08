@@ -119,5 +119,7 @@ pub fn beefy_light_client_demo() {
         )
         .unwrap();
 
-    println!("We presented our beefy mmr proof and storage proof which was accepted by ethereum actor");
+    println!(
+        "We presented our beefy mmr proof and storage proof which was accepted by ethereum actor"
+    );
 }

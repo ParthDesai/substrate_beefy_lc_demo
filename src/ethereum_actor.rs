@@ -14,7 +14,7 @@ pub struct EthereumActor {
 }
 
 impl EthereumActor {
-    pub(crate) fn new(initial_authorities: Vec<AuthorityId>, current_set_id: u64) -> Self {
+    pub fn new(initial_authorities: Vec<AuthorityId>, current_set_id: u64) -> Self {
         Self {
             current_authorities: initial_authorities,
             current_set_id,
@@ -22,7 +22,7 @@ impl EthereumActor {
         }
     }
 
-    pub(crate) fn ingest_new_header(&mut self, ethereum_view: EthereumView) -> Result<(), String> {
+    pub fn ingest_new_header(&mut self, ethereum_view: EthereumView) -> Result<(), String> {
         // Verify signed commitment
         if ethereum_view.signed_commitment.is_none() {
             return Err("Cannot ingest a block without signed commitment".to_string());
@@ -67,7 +67,7 @@ impl EthereumActor {
         Ok(())
     }
 
-    pub(crate) fn verify_claim(
+    pub fn verify_claim(
         &self,
         at_block: TestHeader,
         beefy_mmr_proof_items: Vec<MMRNode<(BlockNumber, HashOutput)>>,
