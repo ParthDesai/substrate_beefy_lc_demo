@@ -37,6 +37,7 @@ pub fn beefy_light_client_demo() {
         false,
         Some(initial_authorities.clone()),
     ));
+    println!("Creating genesis block with Initial authority set id: 0");
     for i in 0..10 {
         if i == 3 {
             blocks.push(create_random_child_block(
@@ -44,12 +45,15 @@ pub fn beefy_light_client_demo() {
                 true,
                 Some(next_authorities.clone()),
             ));
+            println!("Created block: {} containing signed commitment since we updated beefy authority set", blocks.len());
+        } else {
+            blocks.push(create_random_child_block(
+                Some(blocks.last().unwrap()),
+                false,
+                None,
+            ));
+            println!("Created block: {}", blocks.len());
         }
-        blocks.push(create_random_child_block(
-            Some(blocks.last().unwrap()),
-            false,
-            None,
-        ));
     }
 
     blocks.push(create_random_child_block(
@@ -57,6 +61,7 @@ pub fn beefy_light_client_demo() {
         true,
         None,
     ));
+    println!("Created block: {} with signed commitment", blocks.len());
 
     let last_block = blocks.last().unwrap();
     let ethereum_view_of_last_block = last_block.ethereum_view();
@@ -74,14 +79,18 @@ pub fn beefy_light_client_demo() {
     ethereum_actor
         .ingest_new_header(blocks[4].ethereum_view())
         .unwrap();
+    println!("Ethereum actor ingested 5th block (We need to do this since 5th block contains updated authority id)");
 
     ethereum_actor
         .ingest_new_header(ethereum_view_of_last_block)
         .unwrap();
+    println!("Ethereum actor ingested last block (Which contains updated mmr root)");
 
     // We want to prove that 5th block is finalized, so that would mean we need to pass
     // 4th index in blockdata vector element's header.
     // It should be positioned at 4th index in merkle mountain range.
+
+    println!("Now, let's present a claim to ethereum actor that 5th block is finalized and contains a specific key value pair");
 
     let ethereum_view_of_verifying_block = blocks[4].ethereum_view();
 
@@ -109,4 +118,6 @@ pub fn beefy_light_client_demo() {
             ethereum_view_of_verifying_block.chosen_kv_proof,
         )
         .unwrap();
+
+    println!("We presented our beefy mmr proof and storage proof which was accepted by ethereum actor");
 }
