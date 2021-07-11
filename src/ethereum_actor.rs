@@ -1,9 +1,10 @@
 use crate::block_generation::verify_signed_commitment;
 use crate::ethereum_view::EthereumView;
 use crate::mmr::{MMRNode, MergeStrategy};
-use crate::types::{BlockNumber, HashOutput, HashingAlgo, TestHeader, TrieLayout};
+use crate::types::{HashOutput, HashingAlgo, LeafData, TestHeader, TrieLayout};
 use crate::utils::mmr_size_from_number_of_leaves;
 use beefy_primitives::crypto::AuthorityId;
+use codec::Encode;
 use mmr_lib::MerkleProof;
 use std::vec::Vec;
 
@@ -39,7 +40,7 @@ impl EthereumActor {
             return Err("Invalid signature".to_string());
         }
 
-        if ethereum_view.header.number != signed_commitment.commitment.block_number {
+        if ethereum_view.relay_header.number != signed_commitment.commitment.block_number {
             return Err("Invalid block number".to_string());
         }
 
@@ -69,9 +70,12 @@ impl EthereumActor {
 
     pub fn verify_claim(
         &self,
-        at_block: TestHeader,
-        beefy_mmr_proof_items: Vec<MMRNode<(BlockNumber, HashOutput)>>,
+        at_relay_block: TestHeader,
+        beefy_mmr_proof_items: Vec<MMRNode<LeafData>>,
         block_pos_in_mmr: u64,
+        para_block: TestHeader,
+        para_block_inclusion_proof: Vec<Vec<u8>>,
+        para_block_merkle_root: HashOutput,
         claimed_kv: (Vec<u8>, Vec<u8>),
         kv_proof: Vec<Vec<u8>>,
     ) -> Result<(), String> {
@@ -79,9 +83,8 @@ impl EthereumActor {
             return Err("Not ingested a block yet".to_string());
         }
         let last_finalized_block = self.last_finalized_block.as_ref().unwrap();
-        let (number, hash) = (at_block.number, at_block.hash());
 
-        if last_finalized_block.header.number <= number {
+        if last_finalized_block.relay_header.number <= at_relay_block.number {
             return Err(
                 "Cannot verify claims for last finalized block or after that block".to_string(),
             );
@@ -92,25 +95,45 @@ impl EthereumActor {
 
         println!("MMR root: {:?}, size: {}", mmr_root, mmr_size);
 
-        let merkle_proof =
-            MerkleProof::<_, MergeStrategy<(BlockNumber, HashOutput), HashingAlgo>>::new(
-                mmr_size,
-                beefy_mmr_proof_items,
-            );
+        let merkle_proof = MerkleProof::<_, MergeStrategy<LeafData, HashingAlgo>>::new(
+            mmr_size,
+            beefy_mmr_proof_items,
+        );
         if !merkle_proof
             .verify(
                 mmr_root,
-                vec![(block_pos_in_mmr, MMRNode::Data((number, hash)))],
+                vec![(
+                    block_pos_in_mmr,
+                    MMRNode::Data((
+                        at_relay_block.number,
+                        at_relay_block.hash(),
+                        para_block_merkle_root,
+                    )),
+                )],
             )
             .unwrap()
         {
             return Err("Block does not seems to be finalized".to_string());
         }
 
-        let storage_root = at_block.state_root;
+        // We now trust the para block merkle root
+        // So, let's check if given para block is indeed part of that merkle root
+        // if yes, that would mean that para block is finalized
+        // and by extension the storage claim is also finalized.
+        let items = vec![(para_block.hash(), Some(para_block.encode()))];
+        if sp_trie::verify_trie_proof::<TrieLayout, _, _, _>(
+            &para_block_merkle_root,
+            &*para_block_inclusion_proof,
+            items.iter(),
+        )
+        .is_err()
+        {
+            return Err("Unable to verify inclusion of parachain block".to_string());
+        }
+
+        // We now trust the para block
+        let storage_root = para_block.state_root;
         let items = vec![(claimed_kv.0, Some(claimed_kv.1))];
-        sp_trie::verify_trie_proof::<TrieLayout, _, _, _>(&storage_root, &*kv_proof, items.iter())
-            .unwrap();
         if sp_trie::verify_trie_proof::<TrieLayout, _, _, _>(
             &storage_root,
             &*kv_proof,

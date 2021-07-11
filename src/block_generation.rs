@@ -1,7 +1,7 @@
 use crate::block_data::BlockData;
 use crate::mmr::{MMRNode, MergeStrategy};
 use crate::traits::Hashable;
-use crate::types::{BlockNumber, HashOutput, HashingAlgo, TestHeader, TrieLayout};
+use crate::types::{HashingAlgo, LeafData, TestHeader, TrieLayout};
 use crate::utils::mmr_size_from_number_of_leaves;
 use beefy_primitives::crypto::{AuthorityId, AuthoritySignature, Pair};
 use beefy_primitives::{Commitment, SignedCommitment};
@@ -10,10 +10,9 @@ use mmr_lib::util::{MemMMR, MemStore};
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use sp_core::crypto::Pair as _;
-use sp_core::Hasher;
-use sp_runtime::traits::Header as HeaderT;
+use sp_core::{Hasher, KeccakHasher};
 use sp_runtime::RuntimeAppPublic;
-use sp_trie::TrieMut;
+use sp_trie::{MemoryDB, TrieDBMut, TrieMut};
 use std::vec::Vec;
 
 #[derive(Encode, Decode)]
@@ -117,22 +116,52 @@ pub fn create_random_child_block(
     let (_storage_trie_db, storage_trie_root, chosen_kv_pair, chosen_kv_proof) =
         generate_random_storage_and_proof();
     if block_data.is_none() {
+        let genesis_para_header = TestHeader {
+            parent_hash: Default::default(),
+            number: 1,
+            state_root: storage_trie_root,
+            extrinsics_root: Default::default(),
+            digest: Default::default(),
+        };
+        let encoded_para_heads = vec![(genesis_para_header.hash(), genesis_para_header.encode())];
+
+        let mut memdb = MemoryDB::<KeccakHasher>::default();
+        let mut current_para_heads_merkle_root = Default::default();
+        {
+            let mut trie_db =
+                TrieDBMut::<TrieLayout>::new(&mut memdb, &mut current_para_heads_merkle_root);
+            for (block_hash, para_head) in encoded_para_heads.iter() {
+                trie_db.insert(block_hash.as_ref(), para_head).unwrap();
+            }
+        }
+
+        let para_heads_merkle_proof = sp_trie::generate_trie_proof::<TrieLayout, _, _, _>(
+            &memdb,
+            current_para_heads_merkle_root,
+            vec![&genesis_para_header.hash()],
+        )
+        .unwrap();
+
         // This is root
         BlockData {
             chosen_kv_pair,
             chosen_kv_proof,
-            beefy_mmr_store: MemStore::<MMRNode<(BlockNumber, HashOutput)>>::default(),
+            beefy_mmr_store: MemStore::<MMRNode<LeafData>>::default(),
             beefy_mmr_leaves: 0,
-            header: TestHeader {
+            relay_header: TestHeader {
                 parent_hash: Default::default(),
                 number: 1,
-                state_root: storage_trie_root,
+                state_root: Default::default(),
                 extrinsics_root: Default::default(),
                 digest: Default::default(),
             },
+            para_header: genesis_para_header,
+            encoded_para_head_data: encoded_para_heads,
+            para_header_merkle_proof: para_heads_merkle_proof,
             signed_commitment: None,
             current_authority_set: new_authority_set.expect("Genesis needs initial authority set"),
             current_authority_set_id: 0,
+            para_header_merkle_root: current_para_heads_merkle_root,
         }
     } else {
         if new_authority_set.is_some() && !should_generate_commitment {
@@ -140,24 +169,61 @@ pub fn create_random_child_block(
         }
 
         let previous_block_data = block_data.unwrap();
-        let previous_header_hash = previous_block_data.header.hash();
-        let previous_header_number = previous_block_data.header.number();
 
-        let mut mem_mmr = MemMMR::<_, MergeStrategy<(BlockNumber, HashOutput), HashingAlgo>>::new(
+        let previous_relay_header_hash = previous_block_data.relay_header.hash();
+        let previous_relay_header_number = previous_block_data.relay_header.number;
+
+        let previous_para_header_hash = previous_block_data.para_header.hash();
+        let previous_para_header_number = previous_block_data.para_header.number;
+
+        let new_para_header = TestHeader {
+            parent_hash: previous_para_header_hash,
+            number: previous_para_header_number + 1,
+            state_root: storage_trie_root,
+            extrinsics_root: Default::default(),
+            digest: Default::default(),
+        };
+
+        let mut encoded_para_heads = previous_block_data.encoded_para_head_data.clone();
+        // Update encoded para head to include current block here
+        // We are deliberately doing this before trie root calculation
+        // to mimic the real setup
+        encoded_para_heads.push((new_para_header.hash(), new_para_header.encode()));
+
+        let mut memdb = MemoryDB::<KeccakHasher>::default();
+        let mut previous_para_heads_merkle_root = Default::default();
+        {
+            let mut trie_db =
+                TrieDBMut::<TrieLayout>::new(&mut memdb, &mut previous_para_heads_merkle_root);
+            for (block_hash, para_head) in encoded_para_heads.iter() {
+                trie_db.insert(block_hash.as_ref(), para_head).unwrap();
+            }
+        }
+
+        let para_heads_merkle_proof = sp_trie::generate_trie_proof::<TrieLayout, _, _, _>(
+            &memdb,
+            previous_para_heads_merkle_root,
+            vec![&new_para_header.hash()],
+        )
+        .unwrap();
+
+        let mut mem_mmr = MemMMR::<_, MergeStrategy<LeafData, HashingAlgo>>::new(
             mmr_size_from_number_of_leaves(previous_block_data.beefy_mmr_leaves),
             previous_block_data.beefy_mmr_store.clone(),
         );
+
         mem_mmr
             .push(MMRNode::Data((
-                *previous_header_number,
-                previous_header_hash,
+                previous_relay_header_number,
+                previous_relay_header_hash,
+                previous_para_heads_merkle_root,
             )))
             .unwrap();
 
         let new_header = TestHeader {
-            parent_hash: previous_header_hash,
-            number: previous_header_number + 1,
-            state_root: storage_trie_root,
+            parent_hash: previous_relay_header_hash,
+            number: previous_relay_header_number + 1,
+            state_root: Default::default(),
             extrinsics_root: Default::default(),
             digest: Default::default(),
         };
@@ -167,7 +233,7 @@ pub fn create_random_child_block(
             let signed_commitment = if new_authority_set.is_none() {
                 generate_signed_commitment(
                     previous_block_data.current_authority_set_id,
-                    previous_header_number + 1,
+                    previous_relay_header_number + 1,
                     CommitmentPayload {
                         mmr_node: mmr_root,
                         changed_authority_ids: None,
@@ -184,7 +250,7 @@ pub fn create_random_child_block(
                 let new_authority_set = new_authority_set.clone().unwrap();
                 generate_signed_commitment(
                     previous_block_data.current_authority_set_id,
-                    previous_header_number + 1,
+                    previous_relay_header_number + 1,
                     CommitmentPayload {
                         mmr_node: mmr_root,
                         changed_authority_ids: Some(
@@ -211,7 +277,7 @@ pub fn create_random_child_block(
             chosen_kv_proof,
             beefy_mmr_store: mem_mmr.store().clone(),
             beefy_mmr_leaves: previous_block_data.beefy_mmr_leaves + 1,
-            header: new_header,
+            relay_header: new_header,
             signed_commitment: maybe_signed_commitment,
             current_authority_set_id: if new_authority_set.is_none() {
                 previous_block_data.current_authority_set_id
@@ -223,6 +289,11 @@ pub fn create_random_child_block(
             } else {
                 new_authority_set.unwrap()
             },
+
+            para_header: new_para_header,
+            encoded_para_head_data: encoded_para_heads,
+            para_header_merkle_proof: para_heads_merkle_proof,
+            para_header_merkle_root: previous_para_heads_merkle_root,
         }
     }
 }
